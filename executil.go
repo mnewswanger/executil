@@ -1,86 +1,183 @@
 package executil
 
 import (
-	"bytes"
-	"os"
+	"errors"
+	"io"
 	"os/exec"
 	"strings"
+	"sync"
 
-	"github.com/fatih/color"
+	"bufio"
 
+	"github.com/sirupsen/logrus"
 	"gitlab.home.mikenewswanger.com/golang/filesystem"
 )
 
 // Command describes the execution instructions for the command to be run
 type Command struct {
-	Name              string
-	WorkingDirectory  string
-	Executable        string
-	Arguments         []string
-	Debug             bool
-	Verbosity         uint8
-	ContinueOnFailure bool
-	cmd               *exec.Cmd
+	Name             string
+	WorkingDirectory string
+	Executable       string
+	Arguments        []string
+	Debug            bool
+	Verbosity        uint8
+	SentryDSN        string
+	Logger           *logrus.Logger
+	cmd              *exec.Cmd
+	loggerFields     logrus.Fields
+	stdout           string
+	stderr           string
+	validationErrors []string
+	waitGroup        *sync.WaitGroup
 }
 
-// RunWithRealtimeOutput runs the given command and if verbosity is set, returns real-time output to stdout and stderr
-func (c Command) RunWithRealtimeOutput() {
-	color.Green(c.Name)
-	c.setExecutionEnvironment()
+func (c *Command) initialize() {
+	if c.Logger == nil {
+		c.Logger = logrus.New()
 
-	var stderrBuffer bytes.Buffer
-	c.cmd.Stderr = &stderrBuffer
-
-	if c.Verbosity > 0 {
-		c.cmd.Stdout = os.Stdout
-		c.cmd.Stderr = os.Stderr
-	}
-
-	if c.run() {
-		color.Green("Success")
-		println()
-	} else {
-		if !c.ContinueOnFailure {
-			if c.Verbosity == 0 {
-				color.Red(stderrBuffer.String())
-			} else {
-				color.Red("Failed to execute command")
-			}
-			os.Exit(2)
+		switch c.Verbosity {
+		case 0:
+			c.Logger.Level = logrus.ErrorLevel
+			break
+		case 1:
+			c.Logger.Level = logrus.WarnLevel
+			break
+		case 2:
+			fallthrough
+		case 3:
+			c.Logger.Level = logrus.InfoLevel
+			break
+		default:
+			c.Logger.Level = logrus.DebugLevel
+			break
 		}
 	}
-}
 
-// RunWithCombinedOutput executes the given command then returns its combined stdout and stderr to the caller
-func (c Command) RunWithCombinedOutput() []byte {
-	c.setExecutionEnvironment()
-	output, _ := c.cmd.CombinedOutput()
-	return output
-}
-
-// RunWithOutput executes the given command then returns its stdout to the caller
-func (c Command) RunWithOutput() ([]byte, bool) {
-	c.setExecutionEnvironment()
-	output, err := c.cmd.Output()
-	return output, err == nil
-}
-
-func (c *Command) setExecutionEnvironment() {
-	c.cmd = exec.Command(c.Executable, c.Arguments...)
-	if c.WorkingDirectory != "" {
-		c.cmd.Dir = filesystem.BuildAbsolutePathFromHome(c.WorkingDirectory)
-	}
-	if c.Debug {
-		color.Yellow(c.Executable + " " + strings.Join(c.Arguments, " "))
-	}
-}
-
-func (c *Command) run() bool {
-	if err := c.cmd.Start(); err != nil {
-		color.Red("Could not start process")
-		panic(err)
+	c.loggerFields = logrus.Fields{
+		"command_name": c.Name,
 	}
 
-	err := c.cmd.Wait()
-	return err == nil
+	c.waitGroup = &sync.WaitGroup{}
+}
+
+// GetStderr returns error output from the command
+func (c *Command) GetStderr() string {
+	return c.stderr
+}
+
+// GetStdout returns standard output from the command
+func (c *Command) GetStdout() string {
+	return c.stdout
+}
+
+// Run runs the given command
+func (c *Command) Run() error {
+	c.initialize()
+
+	c.Logger.WithFields(c.loggerFields).Info("Running command")
+
+	var err = c.run()
+	if err == nil {
+		c.Logger.WithFields(c.loggerFields).Info("Command succeeded")
+	} else {
+		c.Logger.WithFields(c.loggerFields).Warn("Command execution failed")
+	}
+
+	return err
+}
+
+func (c *Command) addValidationError(errorMessage string) {
+	c.validationErrors = append(c.validationErrors, errorMessage)
+}
+
+func (c *Command) prepareRun() error {
+	var err error
+
+	if c.validate() {
+		c.cmd = exec.Command(c.Executable, c.Arguments...)
+
+		var fs = filesystem.Filesystem{
+			Logger:    c.Logger,
+			Verbosity: c.Verbosity,
+		}
+		if c.WorkingDirectory != "" {
+			c.cmd.Dir, err = fs.BuildAbsolutePathFromHome(c.WorkingDirectory)
+			if err != nil {
+				return err
+			}
+			c.Logger.WithFields(c.loggerFields).Debug("Set working directory to " + c.cmd.Dir)
+		}
+		c.Logger.WithFields(c.loggerFields).Debug("Command: " + c.Executable + " " + strings.Join(c.Arguments, " "))
+
+		// Set up stdout & stderr capture
+		var stdoutPipe, stderrPipe io.ReadCloser
+
+		stdoutPipe, err = c.cmd.StdoutPipe()
+		if err != nil {
+			c.Logger.WithFields(c.loggerFields).Warn("Could not create stdout pipe")
+			return err
+		}
+		var stdoutScanner = bufio.NewScanner(stdoutPipe)
+		c.waitGroup.Add(1)
+		go func(wg *sync.WaitGroup) {
+			var s string
+			for stdoutScanner.Scan() {
+				s = stdoutScanner.Text()
+				c.stdout += s + "\n"
+				if c.Verbosity >= 3 {
+					c.Logger.WithFields(c.loggerFields).Info(s)
+				}
+			}
+			wg.Done()
+		}(c.waitGroup)
+
+		stderrPipe, err = c.cmd.StderrPipe()
+		if err != nil {
+			c.Logger.WithFields(c.loggerFields).Warn("Could not create stderr pipe")
+			return err
+		}
+		var stderrScanner = bufio.NewScanner(stderrPipe)
+		c.waitGroup.Add(1)
+		go func(wg *sync.WaitGroup) {
+			var s string
+			for stderrScanner.Scan() {
+				s = stderrScanner.Text()
+				c.stderr += s + "\n"
+				if c.Verbosity >= 3 {
+					c.Logger.WithFields(c.loggerFields).Warn(s)
+				}
+			}
+			wg.Done()
+		}(c.waitGroup)
+	} else {
+		c.Logger.WithFields(c.loggerFields).Warn("Command validation failed")
+		err = errors.New("Command validation failed")
+	}
+	return err
+}
+
+func (c *Command) run() error {
+	var err = c.prepareRun()
+
+	if err == nil {
+		err = c.cmd.Start()
+		if err == nil {
+			err = c.cmd.Wait()
+			c.waitGroup.Wait()
+		} else {
+			c.Logger.Warn("Could not start process")
+		}
+	}
+
+	return err
+}
+
+func (c *Command) validate() bool {
+	if c.Name == "" {
+		c.addValidationError("Name property is required")
+	}
+	if c.Executable == "" {
+		c.addValidationError("Executable must be specified")
+	}
+	return len(c.validationErrors) == 0
 }
