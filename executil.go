@@ -160,8 +160,8 @@ func (c *Command) run() error {
 	if err == nil {
 		err = c.cmd.Start()
 		if err == nil {
-			err = c.cmd.Wait()
 			c.waitGroup.Wait()
+			err = c.cmd.Wait()
 		} else {
 			c.Logger.Warn("Could not start process")
 		}
