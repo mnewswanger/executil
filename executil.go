@@ -1,28 +1,26 @@
 package executil
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"os/exec"
 	"strings"
 	"sync"
 
-	"bufio"
-
 	"github.com/sirupsen/logrus"
-	"gitlab.home.mikenewswanger.com/golang/filesystem"
+
+	"go.mikenewswanger.com/utilities/filesystem"
 )
 
 // Command describes the execution instructions for the command to be run
 type Command struct {
 	Name             string
-	WorkingDirectory string
-	Executable       string
 	Arguments        []string
-	Debug            bool
-	Verbosity        uint8
-	SentryDSN        string
+	Executable       string
 	Logger           *logrus.Logger
+	Verbosity        uint8
+	WorkingDirectory string
 	cmd              *exec.Cmd
 	loggerFields     logrus.Fields
 	stdout           string
@@ -96,11 +94,11 @@ func (c *Command) prepareRun() error {
 	if c.validate() {
 		c.cmd = exec.Command(c.Executable, c.Arguments...)
 
-		var fs = filesystem.Filesystem{
-			Logger:    c.Logger,
-			Verbosity: c.Verbosity,
-		}
 		if c.WorkingDirectory != "" {
+			var fs = filesystem.Filesystem{
+				Logger:    c.Logger,
+				Verbosity: c.Verbosity,
+			}
 			c.cmd.Dir, err = fs.BuildAbsolutePathFromHome(c.WorkingDirectory)
 			if err != nil {
 				return err
@@ -120,6 +118,7 @@ func (c *Command) prepareRun() error {
 		var stdoutScanner = bufio.NewScanner(stdoutPipe)
 		c.waitGroup.Add(1)
 		go func(wg *sync.WaitGroup) {
+			defer wg.Done()
 			var s string
 			for stdoutScanner.Scan() {
 				s = stdoutScanner.Text()
@@ -128,7 +127,6 @@ func (c *Command) prepareRun() error {
 					c.Logger.WithFields(c.loggerFields).Info(s)
 				}
 			}
-			wg.Done()
 		}(c.waitGroup)
 
 		stderrPipe, err = c.cmd.StderrPipe()
@@ -139,6 +137,7 @@ func (c *Command) prepareRun() error {
 		var stderrScanner = bufio.NewScanner(stderrPipe)
 		c.waitGroup.Add(1)
 		go func(wg *sync.WaitGroup) {
+			defer wg.Done()
 			var s string
 			for stderrScanner.Scan() {
 				s = stderrScanner.Text()
@@ -147,7 +146,6 @@ func (c *Command) prepareRun() error {
 					c.Logger.WithFields(c.loggerFields).Warn(s)
 				}
 			}
-			wg.Done()
 		}(c.waitGroup)
 	} else {
 		c.Logger.WithFields(c.loggerFields).Warn("Command validation failed")
