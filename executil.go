@@ -8,18 +8,29 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sirupsen/logrus"
-
 	"go.mikenewswanger.com/utilities/filesystem"
+
+	"github.com/sirupsen/logrus"
 )
+
+var logger = logrus.New()
+var verbosity = uint8(0)
+
+// SetLogger sets up a logrus instance
+func SetLogger(l *logrus.Logger) {
+	logger = l
+}
+
+// SetVerbosity sets the verbosity for the filesystem package
+func SetVerbosity(v uint8) {
+	verbosity = v
+}
 
 // Command describes the execution instructions for the command to be run
 type Command struct {
 	Name             string
 	Arguments        []string
 	Executable       string
-	Logger           *logrus.Logger
-	Verbosity        uint8
 	WorkingDirectory string
 	cmd              *exec.Cmd
 	loggerFields     logrus.Fields
@@ -30,27 +41,6 @@ type Command struct {
 }
 
 func (c *Command) initialize() {
-	if c.Logger == nil {
-		c.Logger = logrus.New()
-
-		switch c.Verbosity {
-		case 0:
-			c.Logger.Level = logrus.ErrorLevel
-			break
-		case 1:
-			c.Logger.Level = logrus.WarnLevel
-			break
-		case 2:
-			fallthrough
-		case 3:
-			c.Logger.Level = logrus.InfoLevel
-			break
-		default:
-			c.Logger.Level = logrus.DebugLevel
-			break
-		}
-	}
-
 	c.loggerFields = logrus.Fields{
 		"command_name": c.Name,
 	}
@@ -72,13 +62,13 @@ func (c *Command) GetStdout() string {
 func (c *Command) Run() error {
 	c.initialize()
 
-	c.Logger.WithFields(c.loggerFields).Info("Running command")
+	logger.WithFields(c.loggerFields).Info("Running command")
 
 	var err = c.run()
 	if err == nil {
-		c.Logger.WithFields(c.loggerFields).Info("Command succeeded")
+		logger.WithFields(c.loggerFields).Info("Command succeeded")
 	} else {
-		c.Logger.WithFields(c.loggerFields).Warn("Command execution failed")
+		logger.WithFields(c.loggerFields).Warn("Command execution failed")
 	}
 
 	return err
@@ -95,24 +85,21 @@ func (c *Command) prepareRun() error {
 		c.cmd = exec.Command(c.Executable, c.Arguments...)
 
 		if c.WorkingDirectory != "" {
-			var fs = filesystem.Filesystem{
-				Logger:    c.Logger,
-				Verbosity: c.Verbosity,
-			}
-			c.cmd.Dir, err = fs.BuildAbsolutePathFromHome(c.WorkingDirectory)
+			filesystem.SetLogger(logger)
+			c.cmd.Dir, err = filesystem.BuildAbsolutePathFromHome(c.WorkingDirectory)
 			if err != nil {
 				return err
 			}
-			c.Logger.WithFields(c.loggerFields).Debug("Set working directory to " + c.cmd.Dir)
+			logger.WithFields(c.loggerFields).Debug("Set working directory to " + c.cmd.Dir)
 		}
-		c.Logger.WithFields(c.loggerFields).Debug("Command: " + c.Executable + " " + strings.Join(c.Arguments, " "))
+		logger.WithFields(c.loggerFields).Debug("Command: " + c.Executable + " " + strings.Join(c.Arguments, " "))
 
 		// Set up stdout & stderr capture
 		var stdoutPipe, stderrPipe io.ReadCloser
 
 		stdoutPipe, err = c.cmd.StdoutPipe()
 		if err != nil {
-			c.Logger.WithFields(c.loggerFields).Warn("Could not create stdout pipe")
+			logger.WithFields(c.loggerFields).Warn("Could not create stdout pipe")
 			return err
 		}
 		var stdoutScanner = bufio.NewScanner(stdoutPipe)
@@ -123,15 +110,15 @@ func (c *Command) prepareRun() error {
 			for stdoutScanner.Scan() {
 				s = stdoutScanner.Text()
 				c.stdout += s + "\n"
-				if c.Verbosity >= 3 {
-					c.Logger.WithFields(c.loggerFields).Info(s)
+				if verbosity >= 3 {
+					logger.WithFields(c.loggerFields).Info(s)
 				}
 			}
 		}(c.waitGroup)
 
 		stderrPipe, err = c.cmd.StderrPipe()
 		if err != nil {
-			c.Logger.WithFields(c.loggerFields).Warn("Could not create stderr pipe")
+			logger.WithFields(c.loggerFields).Warn("Could not create stderr pipe")
 			return err
 		}
 		var stderrScanner = bufio.NewScanner(stderrPipe)
@@ -142,13 +129,13 @@ func (c *Command) prepareRun() error {
 			for stderrScanner.Scan() {
 				s = stderrScanner.Text()
 				c.stderr += s + "\n"
-				if c.Verbosity >= 3 {
-					c.Logger.WithFields(c.loggerFields).Warn(s)
+				if verbosity >= 3 {
+					logger.WithFields(c.loggerFields).Warn(s)
 				}
 			}
 		}(c.waitGroup)
 	} else {
-		c.Logger.WithFields(c.loggerFields).Warn("Command validation failed")
+		logger.WithFields(c.loggerFields).Warn("Command validation failed")
 		err = errors.New("Command validation failed")
 	}
 	return err
@@ -163,7 +150,7 @@ func (c *Command) run() error {
 			c.waitGroup.Wait()
 			err = c.cmd.Wait()
 		} else {
-			c.Logger.Warn("Could not start process")
+			logger.Warn("Could not start process")
 		}
 	}
 
