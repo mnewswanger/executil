@@ -4,13 +4,15 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 
-	"go.mikenewswanger.com/utilities/filesystem"
-
+	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
+
+	"go.mikenewswanger.com/utilities/filesystem"
 )
 
 var logger = logrus.New()
@@ -35,7 +37,9 @@ type Command struct {
 	cmd              *exec.Cmd
 	loggerFields     logrus.Fields
 	stdout           string
+	StdoutPipe       *os.File
 	stderr           string
+	StderrPipe       *os.File
 	validationErrors []string
 	waitGroup        *sync.WaitGroup
 }
@@ -106,9 +110,21 @@ func (c *Command) prepareRun() error {
 		c.waitGroup.Add(1)
 		go func(wg *sync.WaitGroup) {
 			defer wg.Done()
+
+			// Set up buffer if requested by the caller
+			var f *bufio.Writer
+			if c.StdoutPipe != nil {
+				f = bufio.NewWriter(c.StdoutPipe)
+				defer f.Flush()
+			}
+
+			// Capture the output
 			var s string
 			for stdoutScanner.Scan() {
 				s = stdoutScanner.Text()
+				if f != nil {
+					f.WriteString(color.WhiteString(s) + "\n")
+				}
 				c.stdout += s + "\n"
 				if verbosity >= 3 {
 					logger.WithFields(c.loggerFields).Info(s)
@@ -125,9 +141,21 @@ func (c *Command) prepareRun() error {
 		c.waitGroup.Add(1)
 		go func(wg *sync.WaitGroup) {
 			defer wg.Done()
+
+			// Set up buffer if requested by the caller
+			var f *bufio.Writer
+			if c.StderrPipe != nil {
+				f = bufio.NewWriter(c.StderrPipe)
+				defer f.Flush()
+			}
+
+			// Capture the output
 			var s string
 			for stderrScanner.Scan() {
 				s = stderrScanner.Text()
+				if f != nil {
+					f.WriteString(color.RedString(s) + "\n")
+				}
 				c.stderr += s + "\n"
 				if verbosity >= 3 {
 					logger.WithFields(c.loggerFields).Warn(s)
