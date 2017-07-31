@@ -63,126 +63,130 @@ func (c *Command) GetStdout() string {
 }
 
 // Run runs the given command
-func (c *Command) Run() error {
+func (c *Command) Run() (err error) {
 	c.initialize()
 
 	logger.WithFields(c.loggerFields).Info("Running command")
 
-	var err = c.run()
-	if err == nil {
-		logger.WithFields(c.loggerFields).Info("Command succeeded")
-	} else {
+	err = c.run()
+	if err != nil {
 		logger.WithFields(c.loggerFields).Warn("Command execution failed")
+		return
 	}
 
-	return err
+	logger.WithFields(c.loggerFields).Info("Command succeeded")
+	return
 }
 
 func (c *Command) addValidationError(errorMessage string) {
 	c.validationErrors = append(c.validationErrors, errorMessage)
 }
 
-func (c *Command) prepareRun() error {
-	var err error
-
-	if c.validate() {
-		c.cmd = exec.Command(c.Executable, c.Arguments...)
-
-		if c.WorkingDirectory != "" {
-			filesystem.SetLogger(logger)
-			c.cmd.Dir, err = filesystem.BuildAbsolutePathFromHome(c.WorkingDirectory)
-			if err != nil {
-				return err
-			}
-			logger.WithFields(c.loggerFields).Debug("Set working directory to " + c.cmd.Dir)
-		}
-		logger.WithFields(c.loggerFields).Debug("Command: " + c.Executable + " " + strings.Join(c.Arguments, " "))
-
-		// Set up stdout & stderr capture
-		var stdoutPipe, stderrPipe io.ReadCloser
-
-		stdoutPipe, err = c.cmd.StdoutPipe()
-		if err != nil {
-			logger.WithFields(c.loggerFields).Warn("Could not create stdout pipe")
-			return err
-		}
-		var stdoutScanner = bufio.NewScanner(stdoutPipe)
-		c.waitGroup.Add(1)
-		go func(wg *sync.WaitGroup) {
-			defer wg.Done()
-
-			// Set up buffer if requested by the caller
-			var f *bufio.Writer
-			if c.StdoutPipe != nil {
-				f = bufio.NewWriter(c.StdoutPipe)
-				defer f.Flush()
-			}
-
-			// Capture the output
-			var s string
-			for stdoutScanner.Scan() {
-				s = stdoutScanner.Text()
-				if f != nil {
-					f.WriteString(color.WhiteString(s) + "\n")
-				}
-				c.stdout += s + "\n"
-				if verbosity >= 3 {
-					logger.WithFields(c.loggerFields).Info(s)
-				}
-			}
-		}(c.waitGroup)
-
-		stderrPipe, err = c.cmd.StderrPipe()
-		if err != nil {
-			logger.WithFields(c.loggerFields).Warn("Could not create stderr pipe")
-			return err
-		}
-		var stderrScanner = bufio.NewScanner(stderrPipe)
-		c.waitGroup.Add(1)
-		go func(wg *sync.WaitGroup) {
-			defer wg.Done()
-
-			// Set up buffer if requested by the caller
-			var f *bufio.Writer
-			if c.StderrPipe != nil {
-				f = bufio.NewWriter(c.StderrPipe)
-				defer f.Flush()
-			}
-
-			// Capture the output
-			var s string
-			for stderrScanner.Scan() {
-				s = stderrScanner.Text()
-				if f != nil {
-					f.WriteString(color.RedString(s) + "\n")
-				}
-				c.stderr += s + "\n"
-				if verbosity >= 3 {
-					logger.WithFields(c.loggerFields).Warn(s)
-				}
-			}
-		}(c.waitGroup)
-	} else {
+func (c *Command) prepareRun() (err error) {
+	if !c.validate() {
 		logger.WithFields(c.loggerFields).Warn("Command validation failed")
 		err = errors.New("Command validation failed")
+		return
 	}
-	return err
+
+	c.cmd = exec.Command(c.Executable, c.Arguments...)
+
+	if c.WorkingDirectory != "" {
+		filesystem.SetLogger(logger)
+		c.cmd.Dir, err = filesystem.BuildAbsolutePathFromHome(c.WorkingDirectory)
+		if err != nil {
+			return
+		}
+		logger.WithFields(c.loggerFields).Debug("Set working directory to " + c.cmd.Dir)
+	}
+	logger.WithFields(c.loggerFields).Debug("Command: " + c.Executable + " " + strings.Join(c.Arguments, " "))
+
+	// Set up stdout & stderr capture
+	var stdoutPipe, stderrPipe io.ReadCloser
+
+	stdoutPipe, err = c.cmd.StdoutPipe()
+	if err != nil {
+		logger.WithFields(c.loggerFields).Warn("Could not create stdout pipe")
+		return err
+	}
+	stdoutScanner := bufio.NewScanner(stdoutPipe)
+	c.waitGroup.Add(1)
+	go func(wg *sync.WaitGroup) {
+		defer wg.Done()
+
+		// Set up buffer if requested by the caller
+		var f *bufio.Writer
+		if c.StdoutPipe != nil {
+			f = bufio.NewWriter(c.StdoutPipe)
+			defer f.Flush()
+		}
+
+		// Capture the output
+		var s string
+		for stdoutScanner.Scan() {
+			s = stdoutScanner.Text()
+			if f != nil {
+				f.WriteString(color.WhiteString(s) + "\n")
+			}
+			c.stdout += s + "\n"
+			if verbosity >= 3 {
+				logger.WithFields(c.loggerFields).Info(s)
+			}
+		}
+	}(c.waitGroup)
+
+	stderrPipe, err = c.cmd.StderrPipe()
+	if err != nil {
+		logger.WithFields(c.loggerFields).Warn("Could not create stderr pipe")
+		return
+	}
+	stderrScanner := bufio.NewScanner(stderrPipe)
+	c.waitGroup.Add(1)
+	go func(wg *sync.WaitGroup) {
+		defer wg.Done()
+
+		// Set up buffer if requested by the caller
+		var f *bufio.Writer
+		if c.StderrPipe != nil {
+			f = bufio.NewWriter(c.StderrPipe)
+			defer f.Flush()
+		}
+
+		// Capture the output
+		var s string
+		for stderrScanner.Scan() {
+			s = stderrScanner.Text()
+			if f != nil {
+				f.WriteString(color.RedString(s) + "\n")
+			}
+			c.stderr += s + "\n"
+			if verbosity >= 3 {
+				logger.WithFields(c.loggerFields).Warn(s)
+			}
+		}
+	}(c.waitGroup)
+
+	return
 }
 
-func (c *Command) run() error {
-	var err = c.prepareRun()
+func (c *Command) run() (err error) {
+	err = c.prepareRun()
 
-	if err == nil {
-		err = c.cmd.Start()
-		if err == nil {
-			c.waitGroup.Wait()
-			err = c.cmd.Wait()
-		} else {
-			logger.Warn("Could not start process")
-		}
+	if err != nil {
+		return
 	}
 
-	return err
+	err = c.cmd.Start()
+
+	if err != nil {
+		logger.WithFields(c.loggerFields).Warn("Could not start process")
+		return
+	}
+
+	c.waitGroup.Wait()
+	err = c.cmd.Wait()
+
+	return
 }
 
 func (c *Command) validate() bool {
