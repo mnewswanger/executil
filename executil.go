@@ -97,9 +97,9 @@ func (c *Command) prepareRun() (err error) {
 		if err != nil {
 			return
 		}
-		logger.WithFields(c.loggerFields).Debug("Set working directory to " + c.cmd.Dir)
+		logger.WithFields(c.loggerFields).Debugf("Set working directory to %s", c.cmd.Dir)
 	}
-	logger.WithFields(c.loggerFields).Debug("Command: " + c.Executable + " " + strings.Join(c.Arguments, " "))
+	logger.WithFields(c.loggerFields).Debugf("Command: %s %s", c.Executable, strings.Join(c.Arguments, " "))
 
 	// Set up stdout & stderr capture
 	var stdoutPipe, stderrPipe io.ReadCloser
